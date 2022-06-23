@@ -33,11 +33,11 @@
         <code>metadata</code> field.
     {{ end }}
 
-    {{ if or (eq (fieldName .) "spec") }}
+    {{ if isAllowNestedMember .}}
         <br/>
         <br/>
         <table>
-            {{ template "members" .Type }}
+            {{ template "members" (validType .Type) }}
         </table>
     {{ end }}
     </td>

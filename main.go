@@ -42,12 +42,16 @@ const (
 )
 
 type generatorConfig struct {
-	// HiddenMemberFields hides fields with specified names on all types.
-	HiddenMemberFields []string `json:"hideMemberFields"`
+	// MatchTypePatterns specifies a list to be included in the output. If not
+	// specified, all types will be included except HideTypePatterns.
+	MatchTypePatterns []string `json:"matchTypePatterns"`
 
 	// HideTypePatterns hides types matching the specified patterns from the
 	// output.
 	HideTypePatterns []string `json:"hideTypePatterns"`
+
+	// HiddenMemberFields hides fields with specified names on all types.
+	HiddenMemberFields []string `json:"hideMemberFields"`
 
 	// ExternalPackages lists recognized external package references and how to
 	// link to them.
@@ -127,6 +131,16 @@ func main() {
 	var config generatorConfig
 	if err := d.Decode(&config); err != nil {
 		klog.Fatalf("failed to parse config file: %+v", err)
+	}
+	patternMap := make(map[string]struct{}, len(config.MatchTypePatterns))
+	for _, p := range config.MatchTypePatterns {
+		patternMap[p] = struct{}{}
+	}
+
+	for _, p := range config.HideTypePatterns {
+		if _, exist := patternMap[p]; exist {
+			klog.Fatalf("cannot specify both typePatterns and hideTypePatterns for the same type: %s", p)
+		}
 	}
 
 	klog.Infof("parsing go packages in directory %s", *flAPIDir)
@@ -522,24 +536,36 @@ func typeDisplayName(t *types.Type, c generatorConfig, typePkgMap map[*types.Typ
 	return s
 }
 
-func hideType(t *types.Type, c generatorConfig) bool {
-	for _, pattern := range c.HideTypePatterns {
-		if regexp.MustCompile(pattern).MatchString(t.Name.String()) {
-			return true
+func visibleType(t *types.Type, c generatorConfig) bool {
+	if unicode.IsLower(rune(t.Name.Name[0])) {
+		return false
+	}
+
+	ret := false
+
+	if len(c.MatchTypePatterns) == 0 {
+		ret = true
+	} else {
+		for _, pattern := range c.MatchTypePatterns {
+			if regexp.MustCompile(pattern).MatchString(t.Name.String()) {
+				ret = true
+			}
 		}
 	}
-	if !isExportedType(t) && unicode.IsLower(rune(t.Name.Name[0])) {
-		// types that start with lowercase
-		return true
+
+	for _, pattern := range c.HideTypePatterns {
+		if regexp.MustCompile(pattern).MatchString(t.Name.String()) {
+			return false
+		}
 	}
-	return false
+	return ret
 }
 
 func typeReferences(t *types.Type, c generatorConfig, references map[*types.Type][]*types.Type) []*types.Type {
 	var out []*types.Type
 	m := make(map[*types.Type]struct{})
 	for _, ref := range references[t] {
-		if !hideType(ref, c) {
+		if visibleType(ref, c) {
 			m[ref] = struct{}{}
 		}
 	}
@@ -566,7 +592,7 @@ func sortTypes(typs []*types.Type) []*types.Type {
 func visibleTypes(in []*types.Type, c generatorConfig) []*types.Type {
 	var out []*types.Type
 	for _, t := range in {
-		if !hideType(t, c) {
+		if visibleType(t, c) {
 			out = append(out, t)
 		}
 	}
@@ -589,6 +615,12 @@ func filterCommentTags(comments []string) []string {
 		}
 	}
 	return out
+}
+
+func isAllowNestedMember(m types.Member) bool {
+	tags := types.ExtractCommentTags("+", m.CommentLines)
+	_, ok := tags["allow-nested"]
+	return ok
 }
 
 func isOptionalMember(m types.Member) bool {
@@ -677,14 +709,18 @@ func render(w io.Writer, pkgs []*apiPackage, config generatorConfig) error {
 			}
 			return v
 		},
-		"anchorIDForType":  func(t *types.Type) string { return anchorIDForLocalType(t, typePkgMap) },
-		"safe":             safe,
-		"sortedTypes":      sortTypes,
-		"typeReferences":   func(t *types.Type) []*types.Type { return typeReferences(t, config, references) },
-		"hiddenMember":     func(m types.Member) bool { return hiddenMember(m, config) },
-		"isLocalType":      isLocalType,
-		"isOptionalMember": isOptionalMember,
-		"constantsOfType":  func(t *types.Type) []*types.Type { return constantsOfType(t, typePkgMap[t]) },
+		"validType": func(t *types.Type) *types.Type {
+			return tryDereference(t) // dereference kind=Pointer
+		},
+		"anchorIDForType":     func(t *types.Type) string { return anchorIDForLocalType(t, typePkgMap) },
+		"safe":                safe,
+		"sortedTypes":         sortTypes,
+		"typeReferences":      func(t *types.Type) []*types.Type { return typeReferences(t, config, references) },
+		"hiddenMember":        func(m types.Member) bool { return hiddenMember(m, config) },
+		"isLocalType":         isLocalType,
+		"isOptionalMember":    isOptionalMember,
+		"isAllowNestedMember": isAllowNestedMember,
+		"constantsOfType":     func(t *types.Type) []*types.Type { return constantsOfType(t, typePkgMap[t]) },
 	}).ParseGlob(filepath.Join(*flTemplateDir, "*.tpl"))
 	if err != nil {
 		return errors.Wrap(err, "parse error")

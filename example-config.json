@@ -2,8 +2,8 @@
     "hideMemberFields": [
         "TypeMeta"
     ],
+    "matchTypePatterns": [],
     "hideTypePatterns": [
-        "ParseError$",
         "List$"
     ],
     "externalPackages": [
